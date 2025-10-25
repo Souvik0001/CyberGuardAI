@@ -25,6 +25,7 @@ from sklearn.metrics import (
 from textblob import TextBlob
 from PIL import Image
 import pytesseract
+from collections import Counter
 
 # Configure tesseract path (Windows). Update if installed elsewhere.
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
@@ -393,7 +394,26 @@ async def analyze_chat(text: str = Form(None), csv_file: UploadFile = None):
         )
 
     # compute overall risk as mean lr_score + fraction of anomalies (simple ensemble)
+    # Enhanced with repeat/profile detection to boost sensitivity where appropriate
+    msg_texts = [m.strip().lower() for m in messages if m.strip()]
+    counts = Counter(msg_texts)
+    repeated_count = sum(cnt for msg, cnt in counts.items() if cnt > 1)
+    repeat_rate = repeated_count / max(1, len(msg_texts))
+    profile_view_flag = 1.0 if any("profile view" in m or "profile viewed" in m for m in msg_texts) else 0.0
+
+    lr_mean = float(np.mean(lr_scores)) if len(lr_scores) else 0.0
+    anomaly_frac = len(anomalies) / max(1, len(messages))
+
     overall_risk = float(np.mean(lr_scores) * 0.6 + (len(anomalies) / max(1, len(messages))) * 0.4)
+
+    # Combine ensemble with extra factors (repeat/profile) without disturbing original semantics too much
+    # Final weighting: base ensemble gets priority; add modest bump from repeat_rate/profile_view_flag
+    overall_risk = (
+        overall_risk * 0.85
+        + (repeat_rate * 0.10)
+        + (profile_view_flag * 0.05)
+    )
+    overall_risk = max(0.0, min(1.0, overall_risk))
 
     return JSONResponse(
         content={
@@ -402,6 +422,12 @@ async def analyze_chat(text: str = Form(None), csv_file: UploadFile = None):
             "anomaly_indices": anomalies,
             "overall_risk": round(overall_risk, 3),
             "messages": msgs,
+            "debug_factors": {
+                "lr_mean": lr_mean,
+                "anomaly_frac": anomaly_frac,
+                "repeat_rate": repeat_rate,
+                "profile_view_flag": profile_view_flag,
+            },
         }
     )
 

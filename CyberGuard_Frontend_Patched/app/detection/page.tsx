@@ -7,6 +7,7 @@ import { DetectionForm } from "@/components/detection-form"
 import { ThreatAnalysis } from "@/components/threat-analysis"
 import { RiskGauge } from "@/components/risk-gauge"
 import { AlertCircle, CheckCircle2, AlertTriangle } from "lucide-react"
+import { analyzeChat } from "@/lib/api-client"
 
 interface DetectionResult {
   riskLevel: "low" | "medium" | "high" | "critical"
@@ -26,50 +27,106 @@ export default function DetectionPage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [result, setResult] = useState<DetectionResult | null>(null)
 
-  const handleAnalyze = async (data: any) => {
-    setIsAnalyzing(true)
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 2000))
+  // const handleAnalyze = async (data: any) => {
+  //   setIsAnalyzing(true)
+  //   // Simulate API call
+  //   await new Promise((resolve) => setTimeout(resolve, 2000))
 
-    const mockResult: DetectionResult = {
-      riskLevel: "medium",
-      riskScore: 65,
-      threats: [
-        {
-          id: "1",
-          type: "Unusual Access Pattern",
-          severity: "high",
-          description: "Multiple login attempts from different locations within 1 hour",
-          timestamp: new Date().toISOString(),
-        },
-        {
-          id: "2",
-          type: "Profile Monitoring",
-          severity: "medium",
-          description: "Account viewed 47 times in the last 24 hours",
-          timestamp: new Date(Date.now() - 3600000).toISOString(),
-        },
-        {
-          id: "3",
-          type: "Message Frequency",
-          severity: "low",
-          description: "Increased message frequency from unknown account",
-          timestamp: new Date(Date.now() - 7200000).toISOString(),
-        },
-      ],
-      recommendations: [
-        "Enable two-factor authentication immediately",
-        "Review recent login activity and revoke suspicious sessions",
-        "Block or report the suspicious account",
-        "Consider making your profile private temporarily",
-        "Document all interactions for potential legal action",
-      ],
-      analysisTime: 2.3,
+  //   const mockResult: DetectionResult = {
+  //     riskLevel: "medium",
+  //     riskScore: 65,
+  //     threats: [
+  //       {
+  //         id: "1",
+  //         type: "Unusual Access Pattern",
+  //         severity: "high",
+  //         description: "Multiple login attempts from different locations within 1 hour",
+  //         timestamp: new Date().toISOString(),
+  //       },
+  //       {
+  //         id: "2",
+  //         type: "Profile Monitoring",
+  //         severity: "medium",
+  //         description: "Account viewed 47 times in the last 24 hours",
+  //         timestamp: new Date(Date.now() - 3600000).toISOString(),
+  //       },
+  //       {
+  //         id: "3",
+  //         type: "Message Frequency",
+  //         severity: "low",
+  //         description: "Increased message frequency from unknown account",
+  //         timestamp: new Date(Date.now() - 7200000).toISOString(),
+  //       },
+  //     ],
+  //     recommendations: [
+  //       "Enable two-factor authentication immediately",
+  //       "Review recent login activity and revoke suspicious sessions",
+  //       "Block or report the suspicious account",
+  //       "Consider making your profile private temporarily",
+  //       "Document all interactions for potential legal action",
+  //     ],
+  //     analysisTime: 2.3,
+  //   }
+
+  //   setResult(mockResult)
+  //   setIsAnalyzing(false)
+  // }
+  const handleAnalyze = async (data: any) => {
+  setIsAnalyzing(true)
+  setResult(null)
+
+  try {
+    // Build a single text blob from the form fields so backend can analyze it.
+    // You can change this to upload CSVs or other data formats as needed.
+    const pieces: string[] = []
+    if (data.accountName) pieces.push(`Account: ${data.accountName}`)
+    if (data.platform) pieces.push(`Platform: ${data.platform}`)
+    if (data.dataType) pieces.push(`Data type: ${data.dataType}`)
+    if (data.description) pieces.push(`Description: ${data.description}`)
+    // include any other fields (evidence filenames etc.)
+    const textPayload = pieces.join("\n")
+
+    // Call the centralized frontend API client
+    const res = await analyzeChat({ text: textPayload })
+
+    if (!res.success) {
+      throw new Error(res.error || "Backend analyze failed")
     }
 
-    setResult(mockResult)
+    const backend = res.data
+
+    // Map backend fields to DetectionResult shape expected by UI.
+    // Adjust names if your backend returns slightly different keys.
+    const mapped: DetectionResult = {
+      // riskScore: try to read overall_risk or compute from fields
+      riskScore: Math.round((backend.overall_risk ?? backend.risk ?? 0) * 100),
+      // riskLevel thresholds — tune these to your app's semantics
+      riskLevel:
+        (backend.overall_risk ?? 0) >= 0.85 ? "critical" :
+        (backend.overall_risk ?? 0) >= 0.66 ? "high" :
+        (backend.overall_risk ?? 0) >= 0.33 ? "medium" : "low",
+      threats: (backend.anomalies || backend.threats || []).map((t: any, i: number) => ({
+        id: String(t.id ?? i),
+        type: t.type ?? t.name ?? (t.message ? "Message anomaly" : "Unknown"),
+        severity: t.severity ?? (t.is_anomaly_if ? "high" : "low"),
+        description: t.description ?? t.message ?? JSON.stringify(t).slice(0, 200),
+        timestamp: t.timestamp ?? t.time ?? "Just now",
+      })),
+      recommendations: backend.recommendations ?? (backend.suggested_actions || []),
+      analysisTime: Math.round((backend.analysis_time ?? backend.analysisTime ?? 0) * 10) / 10,
+    }
+
+    setResult(mapped)
+  } catch (err: any) {
+    console.error("Analysis failed:", err)
+    // Optionally show a notification to the user
+    setResult(null)
+    // If you want to surface errors separately, add state for error message
+  } finally {
     setIsAnalyzing(false)
   }
+}
+
 
   const getRiskColor = (level: string) => {
     switch (level) {

@@ -1,7 +1,12 @@
 "use client";
 
 import React, { useState } from "react";
-import { analyzeChat } from "../../lib/api-client"; // keep your existing API client
+import { analyzeChat } from "../../lib/api-client";
+import dynamic from "next/dynamic";
+import EvidenceUploader from "../../components/EvidenceUploader";
+
+// Load the client-only uploader component (ensure the path matches where you created it)
+// const EvidenceUploader = dynamic(() => import("../../components/EvidenceUploader"), { ssr: false });
 
 type EvidenceResult = {
   filename: string;
@@ -20,92 +25,28 @@ export default function StalkerDetectionPage() {
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // evidence upload state
-  const [files, setFiles] = useState<File[]>([]);
+  // evidence state (uploader will call onComplete to populate this)
   const [evidenceResults, setEvidenceResults] = useState<EvidenceResult[] | null>(null);
   const [evidenceStatus, setEvidenceStatus] = useState<string | null>(null);
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files) return;
-    setFiles(Array.from(e.target.files));
-    setEvidenceResults(null);
-    setEvidenceStatus(null);
-  };
-
-  const uploadEvidence = async (): Promise<EvidenceResult[] | null> => {
-    if (!files || files.length === 0) return null;
-    setEvidenceStatus("Uploading evidence...");
-    try {
-      const form = new FormData();
-      // backend expects key 'files' (list)
-      files.forEach((f) => form.append("files", f));
-
-      const res = await fetch(`${API_BASE}/analyze_screenshot`, {
-        method: "POST",
-        body: form,
-      });
-
-      if (!res.ok) {
-        const txt = await res.text();
-        setEvidenceStatus(`Evidence upload failed: ${res.status} ${res.statusText} - ${txt}`);
-        return null;
-      }
-
-      const json = await res.json();
-      // /analyze_screenshot returns { results: [...] } in your backend
-      const arr = Array.isArray(json.results) ? json.results : [];
-      setEvidenceResults(arr);
-      setEvidenceStatus("Evidence uploaded and analyzed");
-      return arr;
-    } catch (err: any) {
-      console.error("uploadEvidence error:", err);
-      setEvidenceStatus("Evidence upload error: " + String(err));
-      return null;
-    }
-  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
     setResult(null);
-    setEvidenceResults(null);
-    setEvidenceStatus(null);
 
     try {
-      // Run text analysis (your existing analyzeChat helper)
-      const chatPromise = analyzeChat({ text });
-
-      // Run evidence upload in parallel (if any files selected)
-      const evidencePromise = files.length > 0 ? uploadEvidence() : Promise.resolve(null);
-
-      const [chatRes, evidenceRes] = await Promise.all([chatPromise, evidencePromise]);
-
-      // Handle chat response shape from your analyzeChat client
-      if (!chatRes || !chatRes.success) {
-        throw new Error(chatRes?.error || "Chat analysis failed");
+      const res = await analyzeChat({ text });
+      if (!res || !res.success) {
+        throw new Error(res?.error || "Analyze failed");
       }
-
-      setResult(chatRes.data ?? chatRes); // adapt depending on your client
-
-      if (evidenceRes) {
-        setEvidenceResults(evidenceRes as EvidenceResult[]);
-      }
+      setResult(res.data ?? res);
     } catch (err: any) {
       console.error("Analyze error:", err);
       setError(err.message || String(err));
     } finally {
       setLoading(false);
     }
-  };
-
-  const clearFiles = () => {
-    setFiles([]);
-    setEvidenceResults(null);
-    setEvidenceStatus(null);
-    // also clear the file input DOM value if needed
-    const fileInput = document.querySelector<HTMLInputElement>("input[type=file][data-evidence-input]");
-    if (fileInput) fileInput.value = "";
   };
 
   return (
@@ -123,36 +64,6 @@ export default function StalkerDetectionPage() {
         />
 
         <div style={{ marginTop: 12 }}>
-          <label style={{ display: "block", marginBottom: 6 }}>Upload Evidence (Optional) — images or PDFs</label>
-          <input
-            data-evidence-input
-            type="file"
-            accept="image/*,application/pdf"
-            multiple
-            onChange={handleFileChange}
-            style={{ display: "block", marginBottom: 8 }}
-          />
-          <div style={{ marginBottom: 8 }}>
-            {files.length === 0 ? (
-              <div style={{ color: "#aaa" }}>No files selected</div>
-            ) : (
-              files.map((f, i) => (
-                <div key={i} style={{ fontSize: 13 }}>
-                  {f.name} — {Math.round(f.size / 1024)} KB
-                </div>
-              ))
-            )}
-          </div>
-          {files.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
-              <button type="button" onClick={clearFiles} style={{ marginRight: 8 }}>
-                Clear Files
-              </button>
-            </div>
-          )}
-        </div>
-
-        <div style={{ marginTop: 12 }}>
           <button type="submit" disabled={loading} style={{ padding: "10px 16px", fontSize: 16 }}>
             {loading ? "Analyzing..." : "Analyze Now"}
           </button>
@@ -160,9 +71,35 @@ export default function StalkerDetectionPage() {
       </form>
 
       <div style={{ marginTop: 20 }}>
+        <h3>Upload Evidence (Optional)</h3>
+        {/* EvidenceUploader handles the file input and upload. It will call onComplete with the backend JSON. */}
+        <EvidenceUploader
+          apiBase={API_BASE}
+          onComplete={(res) => {
+            // The backend returns { results: [...] } from analyze_screenshot
+            if (!res) {
+              setEvidenceResults(null);
+              setEvidenceStatus("No response");
+              return;
+            }
+            if (res.results && Array.isArray(res.results)) {
+              setEvidenceResults(res.results);
+              setEvidenceStatus("Evidence uploaded and analyzed");
+            } else {
+              // fallback: if uploader returns other shape, store it anyway
+              setEvidenceResults(Array.isArray(res) ? res : [res]);
+              setEvidenceStatus("Evidence uploaded (unexpected shape)");
+            }
+          }}
+        />
+      </div>
+
+      <div style={{ marginTop: 20 }}>
         <h3>Chat Analysis Result</h3>
         <div style={{ background: "#0b0b0b", padding: 12, borderRadius: 6, color: "#ddd" }}>
-          <pre style={{ whiteSpace: "pre-wrap", maxHeight: 380, overflow: "auto" }}>{result ? JSON.stringify(result, null, 2) : "No chat result yet"}</pre>
+          <pre style={{ whiteSpace: "pre-wrap", maxHeight: 380, overflow: "auto" }}>
+            {result ? JSON.stringify(result, null, 2) : "No chat result yet"}
+          </pre>
         </div>
       </div>
 

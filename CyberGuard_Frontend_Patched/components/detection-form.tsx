@@ -6,6 +6,7 @@ import { useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Upload, Send } from "lucide-react"
+import EvidenceUploader from "./EvidenceUploader";
 
 interface DetectionFormProps {
   onAnalyze: (data: any) => void
@@ -91,15 +92,26 @@ export function DetectionForm({ onAnalyze, isLoading }: DetectionFormProps) {
             />
           </div>
 
-          {/* File Upload */}
+          {/* File Upload (replaced with EvidenceUploader) */}
           <div className="space-y-2">
             <label className="text-sm font-medium text-foreground">Upload Evidence (Optional)</label>
-            <div className="border-2 border-dashed border-border rounded-lg p-4 text-center cursor-pointer hover:border-primary/50 transition-colors">
-              <Upload className="h-5 w-5 mx-auto text-muted-foreground mb-2" />
-              <p className="text-xs text-muted-foreground">Click to upload or drag and drop</p>
-              <p className="text-xs text-muted-foreground">PNG, JPG, PDF up to 10MB</p>
-              <input type="file" className="hidden" />
-            </div>
+
+            {/* Use the shared EvidenceUploader component (client-only UI that posts to backend) */}
+            <EvidenceUploader
+              apiBase={process.env.NEXT_PUBLIC_API_URL}
+              onComplete={(res) => {
+                // res is the backend JSON returned by /analyze_screenshot
+                // Save the result into your form state (adjust field name as needed).
+                // If your component uses setFormData, update the form data here.
+                // Example: attach the response to formData.evidence
+                if (typeof setFormData === "function") {
+                  setFormData((prev:any) => ({ ...(prev || {}), evidence: res }));
+                } else {
+                  // fallback: print to console and allow you to inspect
+                  console.log("Evidence upload result:", res);
+                }
+              }}
+            />
           </div>
 
           {/* Submit Button */}

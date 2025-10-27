@@ -123,7 +123,7 @@ def ocr_extract_text(pil_img: Image.Image) -> str:
 
 
 # ─────────────────────────────────────────
-# HARASSMENT / COERCION DETECTION (SCREENSHOT ANALYZER)
+# HARASSMENT / COERCION DETECTION
 # ─────────────────────────────────────────
 
 # Rule-based keyword list for abuse, coercion, sexual pressure, blackmail.
@@ -204,7 +204,7 @@ def analyze_harassment_ml(text: str) -> Dict[str, Any]:
 
 
 # ─────────────────────────────────────────
-# SCAM / FRAUD DETECTION (SCREENSHOT ANALYZER)
+# SCAM / FRAUD DETECTION
 # ─────────────────────────────────────────
 
 SCAM_PATTERNS = [
@@ -258,7 +258,7 @@ def analyze_scam_text(text: str) -> Dict[str, Any]:
 
 
 # ─────────────────────────────────────────
-# TAMPER / FORGERY DETECTION (SCREENSHOT ANALYZER)
+# TAMPER / FORGERY DETECTION
 # ─────────────────────────────────────────
 
 def ela_score(pil_img: Image.Image, quality: int = 90) -> float:
@@ -370,9 +370,9 @@ def analyze_tampering_rule(pil_img: Image.Image) -> Dict[str, Any]:
 
 def looks_like_chat_screenshot(pil_img: Image.Image, ocr_text: str) -> bool:
     """
-    Heuristic: guess if this is a normal phone chat screenshot.
-    We soften 'tampered' for real chat screenshots, because UI elements
-    (gradients, emojis, stickers, header bars) trigger high ELA naturally.
+    Guess if this looks like a normal phone chat screenshot.
+    We soften false positives for those, because UI elements
+    naturally create ELA hotspots.
     """
     w, h = pil_img.size
 
@@ -411,15 +411,12 @@ def analyze_tampering_ml(pil_img: Image.Image, ocr_text: str) -> Dict[str, Any]:
 
     img_w, img_h = pil_img.size
 
-    # (1) splice suspicion
     splice_info = analyze_tampering_rule(pil_img)
     splice_flag = splice_info["tampered_splice"]
 
-    # (2) redaction suspicion
     redact_info = detect_redaction_blocks(pil_img)
     redaction_flag = redact_info["redacted"]
 
-    # (3) optional ML
     ml_prob = splice_info["tamper_probability"]
     if tamper_model is not None:
         feat_vec = np.array(
@@ -432,18 +429,14 @@ def analyze_tampering_ml(pil_img: Image.Image, ocr_text: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # (4) chat false-positive mitigation
     chat_like = looks_like_chat_screenshot(pil_img, ocr_text)
 
     if redaction_flag:
-        # definitely edited (info was covered)
         final_tampered = True
         final_reason = redact_info["redaction_reason"]
 
     elif splice_flag:
         if chat_like:
-            # looks like a real chat screenshot;
-            # high ELA alone shouldn't autocall it fake
             final_tampered = False
             final_reason = (
                 "High compression differences found. These can occur in normal "
@@ -454,7 +447,6 @@ def analyze_tampering_ml(pil_img: Image.Image, ocr_text: str) -> Dict[str, Any]:
             final_tampered = True
             final_reason = splice_info["tamper_reason"]
     else:
-        # clean-ish ELA, no redaction
         final_tampered = False
         final_reason = splice_info["tamper_reason"]
 
@@ -471,12 +463,11 @@ def analyze_tampering_ml(pil_img: Image.Image, ocr_text: str) -> Dict[str, Any]:
 
 # ─────────────────────────────────────────
 # STALKER / CYBERSTALKING DETECTION HELPERS
-# (used by /analyze_chat)
 # ─────────────────────────────────────────
 
 def _split_lines_to_messages(text: str) -> List[Dict[str, Any]]:
     """
-    Break a blob of text into per-line pseudo-messages.
+    Breaks a blob of text into per-line pseudo-messages.
     Output: [{"text": "..."}]
     """
     msgs = []
@@ -517,7 +508,6 @@ def _csv_to_messages(file_bytes: bytes) -> List[Dict[str, Any]]:
             if item["text"]:
                 msgs.append(item)
     except Exception:
-        # fallback: naive line split
         try:
             fallback = file_bytes.decode("utf-8", errors="ignore")
             msgs = _split_lines_to_messages(fallback)
@@ -526,7 +516,6 @@ def _csv_to_messages(file_bytes: bytes) -> List[Dict[str, Any]]:
     return msgs
 
 
-# Buckets for stalker / obsessive behavior:
 STALKING_BOUNDARY_PHRASES = [
     "leave me alone",
     "stop texting",
@@ -565,14 +554,13 @@ STALKING_MONITORING_PHRASES = [
     "last seen",
     "i saw you",
     "i'm outside",
-    "im outside",
-    "i am outside",
     "outside your",
     "i'm near your",
     "i know where you live",
     "i know your address",
     "share location",
     "turn on location",
+    "i will come to your",
     "waiting outside",
     "come outside",
     "follow you",
@@ -662,7 +650,6 @@ def analyze_stalker_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
                 matched[key].append(p)
         counts[key] = total
 
-    # scan each category
     scan(STALKING_BOUNDARY_PHRASES, "boundary")
     scan(STALKING_PERSISTENCE_PHRASES, "persistence")
     scan(STALKING_MONITORING_PHRASES, "monitoring")
@@ -670,13 +657,10 @@ def analyze_stalker_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     scan(STALKING_EVASION_PHRASES, "evasion")
     scan(STALKING_DOXX_PHRASES, "doxxing")
 
-    # If user said "stop / leave me alone" but messages keep coming,
-    # that's worse.
     persistence_after_no = counts["boundary"] > 0 and counts["persistence"] > 0
 
-    # crude risk score 0..100
     score = 0
-    score += min(30, counts["threats"] * 15)        # threats weigh heavy
+    score += min(30, counts["threats"] * 15)
     score += min(20, counts["monitoring"] * 10)
     score += min(20, counts["doxxing"] * 10)
     score += min(15, counts["persistence"] * 5)
@@ -688,7 +672,6 @@ def analyze_stalker_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     score = max(0, min(100, score))
 
-    # classification buckets
     if score >= 60:
         classification = "stalking"
     elif score >= 35:
@@ -696,7 +679,6 @@ def analyze_stalker_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     else:
         classification = "normal"
 
-    # advice for user safety
     advice = []
     if classification != "normal":
         advice.extend([
@@ -709,7 +691,6 @@ def analyze_stalker_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "User continued contact after a clear 'stop' — document this for escalation."
             )
 
-    # indicators for UI
     indicators = []
     for key, phrases in matched.items():
         if phrases:
@@ -721,7 +702,7 @@ def analyze_stalker_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     return {
         "classification": classification,
-        "risk_score": round(score / 100.0, 2),  # 0..1
+        "risk_score": round(score / 100.0, 2),
         "indicators": indicators,
         "counts": counts,
         "matched_phrases": matched,
@@ -733,219 +714,7 @@ def analyze_stalker_messages(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 # ─────────────────────────────────────────
-# EXTRA THREAT RULES FOR STALKER DETECTION
-# (physical proximity, blackmail, payout scams)
-# ─────────────────────────────────────────
-
-def high_level_behavior_scan(text: str) -> Dict[str, Any]:
-    """
-    Scan raw text blob for high-severity behaviors:
-    - physical proximity / surveillance
-    - boundary violation
-    - blackmail / coercion
-    - payout / crypto scam
-
-    Returns:
-      {
-        "anomalies": [ {type,severity,message,timestamp}, ... ],
-        "recommendations": [...],
-        "risk_components": [float, ...]  # each 0..1-ish
-      }
-    """
-    lower = text.lower()
-    anomalies: List[Dict[str, Any]] = []
-    recs: List[str] = []
-    risk_components: List[float] = []
-
-    # Physical proximity / surveillance
-    if any(
-        phrase in lower
-        for phrase in [
-            "i know where you work",
-            "i know where you live",
-            "i know where u live",
-            "i'm outside",
-            "im outside",
-            "i am outside",
-            "i'll wait for you outside",
-            "ill wait for you outside",
-            "i'm waiting outside",
-            "i am waiting outside",
-        ]
-    ):
-        anomalies.append({
-            "type": "Physical proximity / surveillance",
-            "severity": "high",
-            "message": "Possible real-world presence / tracking ('i'll wait for you outside', 'i know where you work').",
-            "timestamp": "Just now",
-        })
-        recs.append("Do not meet this person in real life. Tell a trusted friend and consider escalating if they claim to be nearby.")
-        recs.append("Document these messages (screenshots + timestamps).")
-        risk_components.append(0.9)
-
-    # Boundary violation / obsessive persistence
-    if any(
-        phrase in lower
-        for phrase in [
-            "i've told him to leave me alone",
-            "i told him to leave me alone",
-            "i told her to leave me alone",
-            "stop messaging me",
-            "leave me alone",
-            "why are you ignoring me",
-            "if you ignore me again",
-            "i'll keep messaging you",
-            "ill keep messaging you",
-            "answer me now",
-            "why aren't you answering",
-            "why arent you answering",
-        ]
-    ):
-        anomalies.append({
-            "type": "Boundary violation / stalking persistence",
-            "severity": "medium",
-            "message": "Repeated unwanted contact or refusal to respect 'stop'.",
-            "timestamp": "Just now",
-        })
-        recs.append("Block or mute the account if it is safe to do so.")
-        recs.append("Preserve the conversation history in case escalation continues.")
-        risk_components.append(0.6)
-
-    # Threats / coercion / blackmail
-    if any(
-        phrase in lower
-        for phrase in [
-            "i'll leak",
-            "i will leak",
-            "i'll expose",
-            "i will expose",
-            "i'll post this everywhere",
-            "i will post this everywhere",
-            "i'll ruin you",
-            "i will ruin you",
-            "send me pics or i'll",
-            "send me pictures or i'll",
-            "send me nudes or i'll",
-            "your tits are mine",
-            "you are mine",
-        ]
-    ):
-        anomalies.append({
-            "type": "Threat / Intimidation / Blackmail",
-            "severity": "high",
-            "message": "Coercion or blackmail detected ('i'll leak', 'i'll ruin you', forced sexual pressure).",
-            "timestamp": "Just now",
-        })
-        recs.append("Do not send photos, money, or personal info. Capture screenshots immediately.")
-        recs.append("If sexual coercion or underage content is involved, escalate immediately to a trusted adult / relevant authority.")
-        risk_components.append(0.85)
-
-    # Scam / payout lure / crypto excuse
-    if any(
-        phrase in lower
-        for phrase in [
-            "part-time online opportunities",
-            "part time online opportunities",
-            "hiring instagram follow",
-            "your position is a data provider",
-            "for each following you will earn",
-            "you will immediately receive",
-            "send the money via crypto",
-            "bank server is down",
-            "easy payout",
-            "first reward",
-        ]
-    ):
-        anomalies.append({
-            "type": "Payment scam / social engineering",
-            "severity": "medium",
-            "message": "Likely scam / payout lure / crypto excuse.",
-            "timestamp": "Just now",
-        })
-        recs.append("Do not send money or crypto. Stop engaging with this account.")
-        recs.append("Do not move to off-platform payment methods.")
-        risk_components.append(0.5)
-
-    return {
-        "anomalies": anomalies,
-        "recommendations": recs,
-        "risk_components": risk_components,
-    }
-
-
-def merge_stalker_and_behavior(
-    stalker_res: Dict[str, Any],
-    behavior_scan: Dict[str, Any],
-) -> Dict[str, Any]:
-    """
-    Combine:
-     - stalker_res (from analyze_stalker_messages)
-     - behavior_scan (from high_level_behavior_scan)
-
-    and produce final fields for /analyze_chat output.
-    """
-    # Prepare anomaly list for UI:
-    # 1) high-level anomalies (physical proximity / blackmail / scam etc.)
-    ui_anomalies: List[Dict[str, Any]] = list(behavior_scan["anomalies"])
-
-    # 2) bucket indicators from stalker_res -> convert to anomalies
-    for ind in stalker_res.get("indicators", []):
-        bucket_type = ind.get("type", "behavior")
-        phrases = ind.get("phrases", [])
-        count = ind.get("count", 0)
-
-        severity = "low"
-        if bucket_type in ["threats", "monitoring", "doxxing"]:
-            severity = "high"
-        elif bucket_type in ["persistence", "boundary", "evasion"]:
-            severity = "medium"
-
-        msg_preview = f"{bucket_type} x{count}; phrases: {', '.join(phrases[:4])}"
-        ui_anomalies.append({
-            "type": bucket_type,
-            "severity": severity,
-            "message": msg_preview,
-            "timestamp": "Just now",
-        })
-
-    # Merge recommendations (dedupe)
-    recs = list(stalker_res.get("advice", [])) + list(behavior_scan["recommendations"])
-    deduped_recs: List[str] = []
-    seen = set()
-    for r in recs:
-        if r not in seen:
-            deduped_recs.append(r)
-            seen.add(r)
-
-    # Risk calculation:
-    # - stalker_res["risk_score"] is already 0..1
-    # - behavior_scan["risk_components"] is list of ~0..1 pieces
-    stalker_risk_component = float(stalker_res.get("risk_score", 0.0))
-    behavior_max_component = max(behavior_scan["risk_components"], default=0.1)
-    # Take the max — "the scariest thing wins"
-    overall_risk = max(stalker_risk_component, behavior_max_component)
-    overall_risk = round(float(overall_risk), 3)
-
-    # Map numeric risk to label
-    if overall_risk >= 0.9:
-        risk_level = "critical"
-    elif overall_risk >= 0.7:
-        risk_level = "high"
-    elif overall_risk >= 0.4:
-        risk_level = "medium"
-    else:
-        risk_level = "low"
-
-    return {
-        "risk": overall_risk,
-        "risk_level": risk_level,
-        "anomalies": ui_anomalies,
-        "recommendations": deduped_recs,
-    }
-
-
-# ─────────────────────────────────────────
-# RESPONSE MODELS (FOR FASTAPI SCHEMA / DOCS)
+# RESPONSE MODELS (for FastAPI schema / docs)
 # ─────────────────────────────────────────
 
 class ScreenshotAnalysisResult(BaseModel):
@@ -975,19 +744,14 @@ class ScreenshotAnalysisResponse(BaseModel):
     results: List[ScreenshotAnalysisResult]
 
 
-class ChatAnomaly(BaseModel):
-    type: str            # e.g. "Physical proximity / surveillance"
-    severity: str        # "low" | "medium" | "high"
-    message: str         # threat summary or behavior summary
-    timestamp: Optional[str] = None  # e.g. "Just now"
-
-
-class ChatAnalysisResponse(BaseModel):
-    risk: float                 # 0..1
-    risk_level: str             # "low" | "medium" | "high" | "critical"
-    anomalies: List[ChatAnomaly]
-    recommendations: List[str]
-    analysis_time_ms: int
+class ChatResponse(BaseModel):
+    classification: str
+    risk_score: float
+    indicators: List[Dict[str, Any]] = []
+    counts: Dict[str, int] = {}
+    matched_phrases: Dict[str, List[str]] = {}
+    advice: List[str] = []
+    meta: Dict[str, Any] = {}
 
 
 class TrainModelsResponse(BaseModel):
@@ -1005,20 +769,7 @@ class TrainModelsResponse(BaseModel):
 @app.post("/analyze_screenshot", response_model=ScreenshotAnalysisResponse)
 async def analyze_screenshot(files: List[UploadFile] = File(...)):
     """
-    Accepts 1+ screenshots (PNG/JPG/etc). For each:
-      - OCR text extraction
-      - Harassment / coercion analysis
-      - Scam / fraud lure analysis
-      - Tampering / redaction / splice analysis (with chat false-positive reduction)
-      - Verdict string + confidence
-
-    Verdict:
-      "Real"        = looks consistent
-      "Suspicious"  = high ELA but looks like normal chat (treat with caution)
-      "Edited"      = redacted or clearly spliced (manual modification)
-
-    We ALSO cap tamper score for clean chat screenshots so the UI
-    doesn't scream red bars at victims for normal WhatsApp captures.
+    Screenshot forensics + coercion/scam language check.
     """
 
     results: List[ScreenshotAnalysisResult] = []
@@ -1027,19 +778,11 @@ async def analyze_screenshot(files: List[UploadFile] = File(...)):
         raw_bytes = await f.read()
         pil_img = Image.open(io.BytesIO(raw_bytes))
 
-        # 1. OCR
         ocr_text = ocr_extract_text(pil_img)
-
-        # 2. Harassment
         har_info = analyze_harassment_ml(ocr_text)
-
-        # 3. Scam detection
         scam_info = analyze_scam_text(ocr_text)
-
-        # 4. Tampering / redaction / splice
         tamp_info = analyze_tampering_ml(pil_img, ocr_text)
 
-        # 5. Verdict + base confidence before OCR penalty
         suspicious_but_not_redacted = (
             (not tamp_info["tampered"])
             and tamp_info["tamper_score"] >= 45.0
@@ -1056,16 +799,11 @@ async def analyze_screenshot(files: List[UploadFile] = File(...)):
             verdict = "Real"
             base_conf = 0.7
 
-        # downgrade confidence if OCR failed
         if not ocr_text or ocr_text.strip() == "":
             base_conf = min(base_conf, 0.5)
 
         final_conf = round(base_conf, 3)
 
-        # 6. UI-friendly tamper score / probability
-        # If we decided it's not "Edited", AND it looks like chat,
-        # AND there's no manual redaction,
-        # calm the score down for display.
         tamper_score_out = tamp_info["tamper_score"]
         tamper_prob_out = float(tamp_info["tamper_probability"])
 
@@ -1102,98 +840,165 @@ async def analyze_screenshot(files: List[UploadFile] = File(...)):
 
 
 # ─────────────────────────────────────────
-# /analyze_chat
+# /analyze_chat  (used by Stalker Detection UI)
 # ─────────────────────────────────────────
-# This powers the "Stalker Detection" page.
-# It returns richer data (risk_level, anomalies, recommendations)
-# that the frontend dashboard expects.
 
-@app.post("/analyze_chat", response_model=ChatAnalysisResponse)
-async def analyze_chat_endpoint(
+@app.post("/analyze_chat", response_model=ChatResponse)
+async def analyze_chat(
     text: Optional[str] = Form(None),
     csv_file: Optional[UploadFile] = File(None),
 ):
     """
-    Analyze stalking / coercion / proximity threats / scams in conversation data.
-
-    Accepts multipart form-data:
-      - text: pasted description or chat log
-      - csv_file: optional CSV export of chat logs
-        (columns like message/text/content/timestamp/sender)
-
-    Returns:
-      {
-        "risk": 0.82,
-        "risk_level": "high",
-        "anomalies": [...],
-        "recommendations": [...],
-        "analysis_time_ms": 142
-      }
+    Accepts:
+      - text: pasted convo
+      - csv_file: chat export CSV (multipart/form-data)
+    Returns stalker risk analysis.
     """
-
-    t0 = time.time()
-
-    # Step 1: collect messages from text and/or CSV
     messages: List[Dict[str, Any]] = []
 
     if text:
         messages.extend(_split_lines_to_messages(text))
-
-    raw_joined_text = text or ""
-
     if csv_file is not None:
         try:
             data = await csv_file.read()
-            msgs_from_csv = _csv_to_messages(data)
-            messages.extend(msgs_from_csv)
-
-            # also fold CSV messages into raw_joined_text for rule scan
-            joined_csv_lines = "\n".join(m.get("text", "") for m in msgs_from_csv)
-            raw_joined_text = (raw_joined_text + "\n" + joined_csv_lines).strip()
+            messages.extend(_csv_to_messages(data))
         except Exception:
             pass
 
-    # If no input, just return "low"
-    if not messages and not raw_joined_text:
-        t1 = time.time()
-        return ChatAnalysisResponse(
-            risk=0.1,
-            risk_level="low",
-            anomalies=[],
-            recommendations=["No data provided. Please paste messages or upload a chat export."],
-            analysis_time_ms=int((t1 - t0) * 1000),
+    if not messages:
+        return ChatResponse(
+            classification="normal",
+            risk_score=0.0,
+            indicators=[],
+            counts={},
+            matched_phrases={},
+            advice=[],
+            meta={},
         )
 
-    # Step 2: baseline stalker-style analysis (boundaries, tracking, etc.)
-    stalker_res = analyze_stalker_messages(messages if messages else _split_lines_to_messages(raw_joined_text))
+    res = analyze_stalker_messages(messages)
 
-    # Step 3: high level behavior scan (physical proximity, blackmail, scam)
-    behavior_scan = high_level_behavior_scan(raw_joined_text)
-
-    # Step 4: merge both into final risk, anomalies, recs
-    merged = merge_stalker_and_behavior(stalker_res, behavior_scan)
-
-    t1 = time.time()
-    analysis_ms = int((t1 - t0) * 1000)
-
-    # Step 5: build final response object
-    anomalies_for_model = [
-        ChatAnomaly(
-            type=a["type"],
-            severity=a["severity"],
-            message=a["message"],
-            timestamp=a.get("timestamp", "Just now"),
-        )
-        for a in merged["anomalies"]
-    ]
-
-    return ChatAnalysisResponse(
-        risk=merged["risk"],
-        risk_level=merged["risk_level"],
-        anomalies=anomalies_for_model,
-        recommendations=merged["recommendations"],
-        analysis_time_ms=analysis_ms,
+    return ChatResponse(
+        classification=res["classification"],
+        risk_score=res["risk_score"],
+        indicators=res.get("indicators", []),
+        counts=res.get("counts", {}),
+        matched_phrases=res.get("matched_phrases", {}),
+        advice=res.get("advice", []),
+        meta=res.get("meta", {}),
     )
+
+
+# ─────────────────────────────────────────
+# BULK DATASET UPLOAD (for Training UI Option 3)
+# ─────────────────────────────────────────
+
+@app.post("/bulk_upload_harassment")
+async def bulk_upload_harassment(dataset: UploadFile = File(...)):
+    """
+    Accepts a CSV or JSONL of harassment/stalking samples.
+    Appends to data/harassment_samples.jsonl.
+
+    JSONL lines:
+      {"text":"...", "label":1}
+
+    CSV columns:
+      text,label
+    """
+    raw_bytes = await dataset.read()
+    raw_str = raw_bytes.decode("utf-8", errors="ignore").strip()
+
+    lines_to_append = []
+
+    parsed_jsonl_ok = False
+    try:
+        for line in raw_str.splitlines():
+            if not line.strip():
+                continue
+            obj = json.loads(line)
+            text_val = obj.get("text", "")
+            label_val = int(obj.get("label", 0))
+            if text_val != "":
+                lines_to_append.append(
+                    {"text": text_val, "label": label_val}
+                )
+        parsed_jsonl_ok = True
+    except Exception:
+        parsed_jsonl_ok = False
+
+    if not parsed_jsonl_ok:
+        rdr = csv.DictReader(raw_str.splitlines())
+        for row in rdr:
+            text_val = row.get("text", "")
+            label_val = int(row.get("label", 0))
+            if text_val != "":
+                lines_to_append.append(
+                    {"text": text_val, "label": label_val}
+                )
+
+    with open(HARASSMENT_DATA_PATH, "a", encoding="utf-8") as f:
+        for item in lines_to_append:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+    return {
+        "added": len(lines_to_append),
+        "file": HARASSMENT_DATA_PATH,
+        "note": "Now click Retrain Models in the UI to update the harassment model."
+    }
+
+
+@app.post("/bulk_upload_tamper")
+async def bulk_upload_tamper(dataset: UploadFile = File(...)):
+    """
+    Accepts a CSV or JSONL of tamper forensics samples.
+    Appends to data/tamper_samples.jsonl.
+
+    JSONL lines:
+      {"ela":63.2,"res_w":1080,"res_h":1920,"label":1}
+
+    CSV columns:
+      ela,res_w,res_h,label
+    """
+    raw_bytes = await dataset.read()
+    raw_str = raw_bytes.decode("utf-8", errors="ignore").strip()
+
+    rows_to_append = []
+
+    parsed_jsonl_ok = False
+    try:
+        for line in raw_str.splitlines():
+            if not line.strip():
+                continue
+            obj = json.loads(line)
+            rows_to_append.append({
+                "ela": float(obj.get("ela", 0.0)),
+                "res_w": int(float(obj.get("res_w", 0))),
+                "res_h": int(float(obj.get("res_h", 0))),
+                "label": int(obj.get("label", 0))
+            })
+        parsed_jsonl_ok = True
+    except Exception:
+        parsed_jsonl_ok = False
+
+    if not parsed_jsonl_ok:
+        rdr = csv.DictReader(raw_str.splitlines())
+        for row in rdr:
+            rows_to_append.append({
+                "ela": float(row.get("ela", 0.0)),
+                "res_w": int(float(row.get("res_w", 0))),
+                "res_h": int(float(row.get("res_h", 0))),
+                "label": int(row.get("label", 0))
+            })
+
+    with open(TAMPER_DATA_PATH, "a", encoding="utf-8") as f:
+        for item in rows_to_append:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+    return {
+        "added": len(rows_to_append),
+        "file": TAMPER_DATA_PATH,
+        "note": "Now click Retrain Models in the UI to update the tamper model."
+    }
 
 
 # ─────────────────────────────────────────
@@ -1242,8 +1047,7 @@ def train_harassment_model(samples: List[Dict[str, Any]]) -> bool:
     labels = [int(s.get("label", 0)) for s in samples]
 
     if len(set(labels)) < 2:
-        # need both classes 0 and 1
-        return False
+        return False  # need both 0 and 1 present
 
     vec = TfidfVectorizer(
         lowercase=True,
@@ -1318,16 +1122,12 @@ def train_tamper_model(samples: List[Dict[str, Any]]) -> bool:
 @app.post("/train_models", response_model=TrainModelsResponse)
 async def train_models():
     """
-    Retrain:
-      - harassment / coercion text model
-      - tamper (splicing) model
-
-    using labeled data under:
+    Retrain harassment/coercion classifier + tamper classifier
+    using whatever is currently in:
       data/harassment_samples.jsonl
       data/tamper_samples.jsonl
 
-    After training:
-      /analyze_screenshot uses new models automatically.
+    After training, the in-memory models are refreshed.
     """
 
     harassment_samples = load_jsonl(HARASSMENT_DATA_PATH)

@@ -1,242 +1,194 @@
-// /**
-//  * lib/api-client.ts
-//  * Centralized client for CyberGuard backend.
-//  * Uses NEXT_PUBLIC_API_URL or falls back to http://localhost:8000
-//  */
+// frontend/lib/api-client.ts
 
-// export interface ApiResponse<T = any> {
-//   success: boolean
-//   data?: T
-//   error?: string
-// }
+const API_BASE = "http://localhost:8000"; // FastAPI server
 
-// const API_BASE = (process.env.NEXT_PUBLIC_API_URL as string) || "http://localhost:8000"
-
-// async function handleJsonResponse(res: Response) {
-//   try {
-//     return await res.json()
-//   } catch (e) {
-//     return {}
-//   }
-// }
-
-// /**
-//  * Train models.
-//  * options.file (optional) -> File to upload (CSV)
-//  * options.epochs (optional) -> number of epochs to request from backend
-//  */
-// export async function trainModels(options?: { file?: File; epochs?: number }): Promise<ApiResponse> {
-//   try {
-//     const fd = new FormData()
-//     if (options?.file) fd.append("file", options.file)
-//     if (typeof options?.epochs === "number") fd.append("epochs", String(options.epochs))
-
-//     const res = await fetch(`${API_BASE.replace(/\/$/, "")}/train_models`, {
-//       method: "POST",
-//       body: fd,
-//     })
-
-//     const data = await handleJsonResponse(res)
-
-//     if (!res.ok) {
-//       const errMsg = data?.error ?? data?.message ?? `Status ${res.status}`
-//       return { success: false, error: errMsg }
-//     }
-
-//     return { success: true, data }
-//   } catch (err: any) {
-//     return { success: false, error: err?.message ?? String(err) }
-//   }
-// }
-
-// /** Analyze chat (text or csv_file form field) */
-// export async function analyzeChat(opts: { text?: string; csvFile?: File }): Promise<ApiResponse> {
-//   try {
-//     const fd = new FormData()
-//     if (opts.text) fd.append("text", opts.text)
-//     if (opts.csvFile) fd.append("csv_file", opts.csvFile)
-
-//     const res = await fetch(`${API_BASE.replace(/\/$/, "")}/analyze_chat`, {
-//       method: "POST",
-//       body: fd,
-//     })
-//     const data = await handleJsonResponse(res)
-//     if (!res.ok) return { success: false, error: data?.error ?? data?.message ?? `Status ${res.status}` }
-//     return { success: true, data }
-//   } catch (err: any) {
-//     return { success: false, error: err?.message ?? String(err) }
-//   }
-// }
-
-// /** Analyze screenshots (files form field 'files') */
-// export async function analyzeScreenshots(files: File[]): Promise<ApiResponse> {
-//   try {
-//     const fd = new FormData()
-//     files.forEach((f) => fd.append("files", f))
-//     const res = await fetch(`${API_BASE.replace(/\/$/, "")}/analyze_screenshot`, {
-//       method: "POST",
-//       body: fd,
-//     })
-//     const data = await handleJsonResponse(res)
-//     if (!res.ok) return { success: false, error: data?.error ?? data?.message ?? `Status ${res.status}` }
-//     return { success: true, data }
-//   } catch (err: any) {
-//     return { success: false, error: err?.message ?? String(err) }
-//   }
-// }
-
-// /** Upload dataset helper (field 'file') - placeholder if you add upload_dataset later */
-// export async function uploadDataset(file: File): Promise<ApiResponse> {
-//   try {
-//     const fd = new FormData()
-//     fd.append("file", file)
-//     const res = await fetch(`${API_BASE.replace(/\/$/, "")}/upload_dataset`, {
-//       method: "POST",
-//       body: fd,
-//     })
-//     const data = await handleJsonResponse(res)
-//     if (!res.ok) return { success: false, error: data?.error ?? data?.message ?? `Status ${res.status}` }
-//     return { success: true, data }
-//   } catch (err: any) {
-//     return { success: false, error: err?.message ?? String(err) }
-//   }
-// }
-
-/**
- * lib/api-client.ts
- * Centralized client for CyberGuard backend.
- * Uses NEXT_PUBLIC_API_URL or falls back to http://localhost:8000
- *
- * Reworked to: - log requests/responses for easier debugging
- *               - handle non-JSON responses gracefully
- *               - provide clearer error messages
- */
-
-export interface ApiResponse<T = any> {
-  success: boolean;
-  data?: T;
-  error?: string;
-}
-
-const API_BASE = (process.env.NEXT_PUBLIC_API_URL as string) || "http://localhost:8000";
-
-async function handleJsonResponse(res: Response) {
-  // Try parse JSON; if fails return the plain text so caller can report error.
-  const text = await res.text();
-  try {
-    return text ? JSON.parse(text) : {};
-  } catch (e) {
-    // Not JSON - return text under a predictable key so error messages are visible
-    return { _rawText: text };
+// -------------------------------
+// Screenshot Analysis (already in your app)
+// -------------------------------
+export async function analyzeScreenshots(files: File[]) {
+  const formData = new FormData();
+  for (const f of files) {
+    formData.append("files", f);
   }
-}
 
-function buildUrl(path: string) {
-  // ensure no double-slash
-  return `${API_BASE.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
-}
-
-async function safeFetch(url: string, opts: RequestInit) {
-  // wrapper to log and run fetch
-  console.debug("[api-client] fetch ->", url, opts);
-  const res = await fetch(url, opts);
-  const parsed = await handleJsonResponse(res);
-  console.debug("[api-client] response ->", url, res.status, parsed);
-  return { res, parsed };
-}
-
-/** Train models. options.file (optional) -> File to upload (CSV). options.epochs (optional) -> number */
-export async function trainModels(options?: { file?: File; epochs?: number }): Promise<ApiResponse> {
   try {
-    const fd = new FormData();
-    if (options?.file) fd.append("file", options.file);
-    if (typeof options?.epochs === "number") fd.append("epochs", String(options.epochs));
-
-    const url = buildUrl("/train_models");
-    const { res, parsed } = await safeFetch(url, {
+    const res = await fetch(`${API_BASE}/analyze_screenshot`, {
       method: "POST",
-      body: fd,
-      // browser sets multipart boundary automatically
+      body: formData,
     });
 
     if (!res.ok) {
-      const errMsg = (parsed && (parsed.error || parsed.message || parsed._rawText)) || `Status ${res.status}`;
-      return { success: false, error: String(errMsg) };
+      return { success: false, error: `HTTP ${res.status}` };
     }
 
-    return { success: true, data: parsed };
+    const data = await res.json();
+    return { success: true, data };
   } catch (err: any) {
-    console.error("[api-client.trainModels] error", err);
-    return { success: false, error: err?.message ?? String(err) };
+    return { success: false, error: String(err) };
   }
 }
 
-/** Analyze chat (text or csv_file form field) */
-export async function analyzeChat(opts: { text?: string; csvFile?: File }): Promise<ApiResponse> {
+// -------------------------------
+// Stalker Detection (for /detection page)
+// -------------------------------
+export async function analyzeChat(
+  descriptionText: string,
+  csvFile: File | null
+) {
+  const formData = new FormData();
+  if (descriptionText && descriptionText.trim() !== "") {
+    formData.append("text", descriptionText);
+  }
+  if (csvFile) {
+    formData.append("csv_file", csvFile);
+  }
+
   try {
-    const fd = new FormData();
-    if (opts.text) fd.append("text", opts.text);
-    if (opts.csvFile) fd.append("csv_file", opts.csvFile);
-
-    const url = buildUrl("/analyze_chat");
-    const { res, parsed } = await safeFetch(url, {
+    const res = await fetch(`${API_BASE}/analyze_chat`, {
       method: "POST",
-      body: fd,
+      body: formData,
     });
-
     if (!res.ok) {
-      const errMsg = (parsed && (parsed.error || parsed.message || parsed._rawText)) || `Status ${res.status}`;
-      return { success: false, error: String(errMsg) };
+      return { success: false, error: `HTTP ${res.status}` };
     }
-    return { success: true, data: parsed };
+    const data = await res.json();
+    return { success: true, data };
   } catch (err: any) {
-    console.error("[api-client.analyzeChat] error", err);
-    return { success: false, error: err?.message ?? String(err) };
+    return { success: false, error: String(err) };
   }
 }
 
-/** Analyze screenshots (files form field 'files') */
-export async function analyzeScreenshots(files: File[]): Promise<ApiResponse> {
+// -------------------------------
+// Training helpers already in UI
+// -------------------------------
+
+// Save one harassment sample (single message or multi-line) to harassment_samples.jsonl
+export async function saveHarassmentSample(text: string, isAbusive: boolean) {
+  // We'll POST JSON to a tiny helper route we simulate client-side,
+  // but we actually don't have a dedicated backend route for single-sample
+  // append in the code we shipped -- in your current codebase you probably
+  // already had something like this. If not, easiest path:
+  // client writes directly to harassment_samples.jsonl is not possible from browser.
+  //
+  // For now we'll *simulate* by using bulk_upload_harassment with a tiny JSONL blob.
+  const fileBlob = new Blob(
+    [
+      JSON.stringify({
+        text,
+        label: isAbusive ? 1 : 0,
+      }) + "\n",
+    ],
+    { type: "application/jsonl" }
+  );
+
+  const formData = new FormData();
+  formData.append("dataset", fileBlob, "sample.jsonl");
+
   try {
-    const fd = new FormData();
-    files.forEach((f) => fd.append("files", f));
-
-    const url = buildUrl("/analyze_screenshot");
-    const { res, parsed } = await safeFetch(url, {
+    const res = await fetch(`${API_BASE}/bulk_upload_harassment`, {
       method: "POST",
-      body: fd,
+      body: formData,
     });
-
     if (!res.ok) {
-      const errMsg = (parsed && (parsed.error || parsed.message || parsed._rawText)) || `Status ${res.status}`;
-      return { success: false, error: String(errMsg) };
+      return { success: false, error: `HTTP ${res.status}` };
     }
-
-    return { success: true, data: parsed };
+    const data = await res.json();
+    return { success: true, data };
   } catch (err: any) {
-    console.error("[api-client.analyzeScreenshots] error", err);
-    return { success: false, error: err?.message ?? String(err) };
+    return { success: false, error: String(err) };
   }
 }
 
-/** Upload dataset helper (field 'file') - placeholder if you add upload_dataset later */
-export async function uploadDataset(file: File): Promise<ApiResponse> {
-  try {
-    const fd = new FormData();
-    fd.append("file", file);
-    const url = buildUrl("/upload_dataset");
-    const { res, parsed } = await safeFetch(url, {
-      method: "POST",
-      body: fd,
-    });
+// Save one tamper sample (ela/res etc.) to tamper_samples.jsonl
+export async function saveTamperSample(
+  elaScore: string,
+  widthPx: string,
+  heightPx: string,
+  isTampered: boolean
+) {
+  const fileBlob = new Blob(
+    [
+      JSON.stringify({
+        ela: parseFloat(elaScore || "0"),
+        res_w: parseInt(widthPx || "0", 10),
+        res_h: parseInt(heightPx || "0", 10),
+        label: isTampered ? 1 : 0,
+      }) + "\n",
+    ],
+    { type: "application/jsonl" }
+  );
 
+  const formData = new FormData();
+  formData.append("dataset", fileBlob, "tamper.jsonl");
+
+  try {
+    const res = await fetch(`${API_BASE}/bulk_upload_tamper`, {
+      method: "POST",
+      body: formData,
+    });
     if (!res.ok) {
-      const errMsg = (parsed && (parsed.error || parsed.message || parsed._rawText)) || `Status ${res.status}`;
-      return { success: false, error: String(errMsg) };
+      return { success: false, error: `HTTP ${res.status}` };
     }
-    return { success: true, data: parsed };
+    const data = await res.json();
+    return { success: true, data };
   } catch (err: any) {
-    console.error("[api-client.uploadDataset] error", err);
-    return { success: false, error: err?.message ?? String(err) };
+    return { success: false, error: String(err) };
+  }
+}
+
+// Retrain models using whatever is in the .jsonl files
+export async function retrainModels() {
+  try {
+    const res = await fetch(`${API_BASE}/train_models`, {
+      method: "POST",
+    });
+    if (!res.ok) {
+      return { success: false, error: `HTTP ${res.status}` };
+    }
+    const data = await res.json();
+    return { success: true, data };
+  } catch (err: any) {
+    return { success: false, error: String(err) };
+  }
+}
+
+// -------------------------------
+// NEW: bulk dataset upload from UI
+// -------------------------------
+export async function uploadHarassmentDataset(file: File) {
+  const formData = new FormData();
+  formData.append("dataset", file);
+
+  try {
+    const res = await fetch(`${API_BASE}/bulk_upload_harassment`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) {
+      return { success: false, error: `HTTP ${res.status}` };
+    }
+    const data = await res.json();
+    return { success: true, data };
+  } catch (err: any) {
+    return { success: false, error: String(err) };
+  }
+}
+
+export async function uploadTamperDataset(file: File) {
+  const formData = new FormData();
+  formData.append("dataset", file);
+
+  try {
+    const res = await fetch(`${API_BASE}/bulk_upload_tamper`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) {
+      return { success: false, error: `HTTP ${res.status}` };
+    }
+    const data = await res.json();
+    return { success: true, data };
+  } catch (err: any) {
+    return { success: false, error: String(err) };
   }
 }

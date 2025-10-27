@@ -1,329 +1,420 @@
-"use client"
+"use client";
 
-import React, { useState } from "react"
-import { AppLayout } from "@/components/app-layout"
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { DatasetManager } from "@/components/dataset-manager"
-import { ModelConfig } from "@/components/model-config"
-import { TrainingProgress } from "@/components/training-progress"
-import { ModelPerformance } from "@/components/model-performance"
-import { CheckCircle2, Pause, Square } from "lucide-react"
-import { trainModels } from "@/lib/api-client"
+import React, { useState } from "react";
+import { AppLayout } from "@/components/app-layout";
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardContent,
+} from "@/components/ui/card";
 
-interface TrainingSession {
-  id: string
-  name: string
-  status: "idle" | "training" | "completed" | "failed"
-  progress: number
-  accuracy: number
-  loss: number
-  epoch: number
-  totalEpochs: number
-  startTime: string
-  estimatedTime: string
-  metrics: {
-    precision: number // fraction 0..1
-    recall: number // fraction 0..1
-    f1Score: number // fraction 0..1
-    auc: number // fraction 0..1
-  }
-  // optional UI helpers
-  elapsedSeconds?: number
-  etaSeconds?: number
-  history?: { epoch: number; accuracyPct: number; loss: number }[]
-}
+import {
+  saveHarassmentSample,
+  saveTamperSample,
+  retrainModels,
+  uploadHarassmentDataset,
+  uploadTamperDataset,
+} from "@/lib/api-client";
+
+import { Switch } from "@/components/ui/switch"; // if you don't have this, replace with checkbox
+import { AlertCircle } from "lucide-react";
 
 export default function TrainingPage() {
-  const [trainingSession, setTrainingSession] = useState<TrainingSession | null>(null)
-  const [isTraining, setIsTraining] = useState(false)
-  const [datasetSelected, setDatasetSelected] = useState(false)
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  // --- single harassment sample form ---
+  const [chatText, setChatText] = useState(
+    `Example:\n"Send me pics or I'll leak everything."\n"Stop ignoring me. I'm outside your house."`
+  );
+  const [isAbusive, setIsAbusive] = useState(true);
+  const [harassmentStatus, setHarassmentStatus] = useState<null | string>(null);
 
-  const handleDatasetSelected = (payload?: any) => {
-    if (!payload) {
-      setSelectedFile(null)
-      setDatasetSelected(false)
-      return
-    }
-    if (payload instanceof File) {
-      setSelectedFile(payload)
-      setDatasetSelected(true)
-      console.log("Dataset file selected:", payload.name)
-      return
-    }
-    if (typeof payload === "boolean") {
-      setDatasetSelected(Boolean(payload))
-      return
-    }
-    if (payload?.target?.files?.[0]) {
-      setSelectedFile(payload.target.files[0])
-      setDatasetSelected(true)
-    }
-  }
+  // --- single tamper sample form ---
+  const [elaScore, setElaScore] = useState("62.5");
+  const [widthPx, setWidthPx] = useState("1080");
+  const [heightPx, setHeightPx] = useState("1920");
+  const [isTampered, setIsTampered] = useState(false);
+  const [tamperStatus, setTamperStatus] = useState<null | string>(null);
 
-  const toFraction = (v: any) => {
-    if (v === null || v === undefined || Number.isNaN(Number(v))) return 0
-    const n = Number(v)
-    if (n >= 0 && n <= 1) return n
-    if (n > 1 && n <= 100) return n / 100
-    if (n > 100) return 1
-    return 0
-  }
+  // --- retrain status ---
+  const [retrainStatus, setRetrainStatus] = useState<null | string>(null);
 
-  const handleStartTraining = async (config: any) => {
-    setIsTraining(true)
-    const totalEpochs = config?.epochs ?? 50
-    const initial: TrainingSession = {
-      id: "train-" + Date.now(),
-      name: config?.modelName || "Custom Threat Detector",
-      status: "training",
-      progress: 0,
-      accuracy: 0,
-      loss: 1,
-      epoch: 0,
-      totalEpochs,
-      startTime: new Date().toISOString(),
-      estimatedTime: "~calculating",
-      metrics: { precision: 0, recall: 0, f1Score: 0, auc: 0 },
-      history: [],
-    }
-    setTrainingSession(initial)
+  // --- bulk upload forms ---
+  const [harassmentFile, setHarassmentFile] = useState<File | null>(null);
+  const [tamperFile, setTamperFile] = useState<File | null>(null);
+  const [bulkStatus, setBulkStatus] = useState<null | string>(null);
 
-    const startTs = Date.now()
-    let elapsedTimer: number | null = window.setInterval(() => {
-      setTrainingSession((prev) =>
-        prev
-          ? {
-              ...prev,
-              elapsedSeconds: (Date.now() - startTs) / 1000,
-            }
-          : prev,
-      )
-    }, 500)
-
-    try {
-      const res = await trainModels({ file: selectedFile ?? undefined, epochs: totalEpochs })
-      if (!res.success) throw new Error(res.error || "Training failed")
-      const data = res.data || {}
-      console.log("trainModels response:", data)
-
-      const epoch_metrics: Array<{ epoch?: number; accuracy?: number; loss?: number }> = Array.isArray(
-        data.epoch_metrics,
-      )
-        ? data.epoch_metrics
-        : []
-
-      const lr = data.linear_regression ?? {}
-      const ifBlock = data.isolation_forest ?? {}
-
-      // compute final fractions (0..1) — keep as fractions so ModelPerformance can format
-      const precisionFrac = toFraction(lr["precision_binary"] ?? lr["precision"] ?? ifBlock["precision_binary"] ?? 0)
-      const recallFrac = toFraction(lr["recall_binary"] ?? lr["recall"] ?? ifBlock["recall_binary"] ?? 0)
-      const f1Frac = precisionFrac + recallFrac > 0 ? (2 * precisionFrac * recallFrac) / (precisionFrac + recallFrac) : 0
-      const aucFrac = toFraction(lr["auc"] ?? ifBlock["auc"] ?? 0)
-
-      if (epoch_metrics.length > 0) {
-        const frameMs = config?.uiFrameMs ?? 120
-        const uiDurationMs = Math.max(300, epoch_metrics.length * frameMs)
-        const replayStart = Date.now()
-        let idx = 0
-        setTrainingSession((prev) => (prev ? { ...prev, history: [] } : prev))
-
-        const replayTimer = window.setInterval(() => {
-          const elapsedSec = (Date.now() - startTs) / 1000
-          const elapsedReplay = Date.now() - replayStart
-          const remainingMs = Math.max(0, uiDurationMs - elapsedReplay)
-          const etaSec = remainingMs / 1000
-
-          if (idx >= epoch_metrics.length) {
-            clearInterval(replayTimer)
-            const final = epoch_metrics[epoch_metrics.length - 1] || {}
-
-            setTrainingSession((prev) =>
-              prev
-                ? {
-                    ...prev,
-                    status: "completed",
-                    progress: 100,
-                    accuracy: Math.round(((final.accuracy ?? 0) * 100) * 100) / 100, // stored as percent for chart/box
-                    loss: Math.round(((final.loss ?? 0) * 1000)) / 1000,
-                    epoch: epoch_metrics.length,
-                    elapsedSeconds: elapsedSec,
-                    etaSeconds: 0,
-                    estimatedTime: "~0s",
-                    // store metrics AS FRACTIONS 0..1 — ModelPerformance will render percent
-                    metrics: {
-                      precision: precisionFrac,
-                      recall: recallFrac,
-                      f1Score: f1Frac,
-                      auc: aucFrac,
-                    },
-                    history: epoch_metrics.map((e) => ({
-                      epoch: e.epoch ?? 0,
-                      accuracyPct: Math.round(((e.accuracy ?? 0) * 100) * 100) / 100, // percent 0..100
-                      loss: Math.round(((e.loss ?? 0) * 1000)) / 1000,
-                    })),
-                  }
-                : prev,
-            )
-
-            if (elapsedTimer) {
-              clearInterval(elapsedTimer)
-              elapsedTimer = null
-            }
-            setIsTraining(false)
-            return
-          }
-
-          const e = epoch_metrics[idx]
-          const epochIndex = idx + 1
-          const progressPct = Math.round((epochIndex / epoch_metrics.length) * 10000) / 100
-          const accuracyPct = Math.round(((e.accuracy ?? 0) * 100) * 100) / 100
-          const lossRounded = Math.round(((e.loss ?? 0) * 1000)) / 1000
-
-          setTrainingSession((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  progress: progressPct,
-                  accuracy: accuracyPct,
-                  loss: lossRounded,
-                  epoch: epochIndex,
-                  elapsedSeconds: elapsedSec,
-                  etaSeconds: etaSec,
-                  estimatedTime: etaSec <= 0.5 ? "~0s" : etaSec >= 60 ? `~${Math.floor(etaSec / 60)}m ${Math.floor(etaSec % 60)}s` : `~${Math.floor(etaSec)}s`,
-                  history: [...(prev.history ?? []), { epoch: epochIndex, accuracyPct, loss: lossRounded }],
-                }
-              : prev,
-          )
-
-          idx += 1
-        }, frameMs)
-      } else {
-        // no epoch metrics - short animation + set final metrics (fractions)
-        const finalAccFrac = toFraction(lr["accuracy_binary(>=0.5)"] ?? lr["accuracy_binary"] ?? lr["accuracy"] ?? 0)
-        const finalAccPct = finalAccFrac * 100
-        const finalLoss = Number(lr["mse"] ?? data.mse ?? 0)
-        const animMs = 800
-        const startTime = Date.now()
-        const from = { progress: 0, accuracy: 0, loss: 1 }
-
-        // Build tiny synthetic history so graph isn't empty
-        const syntheticCount = Math.min(6, Math.max(3, Math.floor(totalEpochs / 5)))
-        const synthetic = Array.from({ length: syntheticCount }, (_, i) => {
-          const t = (i + 1) / syntheticCount
-          // finalAccPct is percent already; scale by t and keep 2 decimals
-          return { epoch: Math.round(t * totalEpochs), accuracyPct: Math.round(t * finalAccPct * 100) / 100, loss: Math.round((1 - t) * finalLoss * 1000) / 1000 }
-        })
-
-        setTrainingSession((prev) => (prev ? { ...prev, history: synthetic } : prev))
-
-        const tick = () => {
-          const t = Math.min(1, (Date.now() - startTime) / animMs)
-          const interp = (a: number, b: number) => a + (b - a) * t
-          const elapsedSec = (Date.now() - startTs) / 1000
-          setTrainingSession((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  progress: Math.round(interp(from.progress, 100) * 100) / 100,
-                  accuracy: Math.round(interp(from.accuracy, finalAccPct) * 100) / 100,
-                  loss: Math.round(interp(from.loss, finalLoss) * 1000) / 1000,
-                  epoch: totalEpochs,
-                  elapsedSeconds: elapsedSec,
-                  etaSeconds: 0,
-                  estimatedTime: "~0s",
-                  // store metrics AS FRACTIONS 0..1
-                  metrics: { precision: precisionFrac, recall: recallFrac, f1Score: f1Frac, auc: aucFrac },
-                }
-              : prev,
-          )
-          if (t < 1) requestAnimationFrame(tick)
-          else {
-            setIsTraining(false)
-            if (elapsedTimer) {
-              clearInterval(elapsedTimer)
-              elapsedTimer = null
-            }
-          }
-        }
-        requestAnimationFrame(tick)
-      }
-    } catch (err: any) {
-      console.error("Training failed:", err)
-      setTrainingSession((prev) => (prev ? { ...prev, status: "failed" } : prev))
-      setIsTraining(false)
-      if (elapsedTimer) {
-        clearInterval(elapsedTimer)
-        elapsedTimer = null
-      }
+  // Save single harassment sample
+  async function handleSaveHarassment() {
+    setHarassmentStatus("Saving...");
+    const res = await saveHarassmentSample(chatText, isAbusive);
+    if (!res.success) {
+      setHarassmentStatus("Error: " + res.error);
+    } else {
+      setHarassmentStatus(
+        `Saved. (${res.data?.added ?? 1} sample appended)`
+      );
     }
   }
 
-  const handlePauseTraining = () => {
-    setTrainingSession((prev) => (prev ? { ...prev, status: "idle" } : null))
-    setIsTraining(false)
+  // Save single tamper sample
+  async function handleSaveTamper() {
+    setTamperStatus("Saving...");
+    const res = await saveTamperSample(
+      elaScore,
+      widthPx,
+      heightPx,
+      isTampered
+    );
+    if (!res.success) {
+      setTamperStatus("Error: " + res.error);
+    } else {
+      setTamperStatus(
+        `Saved. (${res.data?.added ?? 1} sample appended)`
+      );
+    }
   }
 
-  const handleStopTraining = () => {
-    setTrainingSession(null)
-    setIsTraining(false)
+  // Retrain both models
+  async function handleRetrain() {
+    setRetrainStatus("Training...");
+    const res = await retrainModels();
+    if (!res.success) {
+      setRetrainStatus("Error: " + res.error);
+    } else {
+      const d = res.data;
+      setRetrainStatus(
+        `Done. ${d.harassment_model_trained ? "Harass OK" : "Harass FAIL"}, ${d.tamper_model_trained ? "Tamper OK" : "Tamper FAIL"}.`
+      );
+    }
+  }
+
+  // Upload BIG harassment dataset (.jsonl or .csv)
+  async function handleBulkHarassmentUpload() {
+    if (!harassmentFile) {
+        setBulkStatus("Select a harassment dataset first.");
+        return;
+    }
+    setBulkStatus("Uploading harassment dataset...");
+    const res = await uploadHarassmentDataset(harassmentFile);
+    if (!res.success) {
+      setBulkStatus("Error: " + res.error);
+    } else {
+      setBulkStatus(
+        `Harassment dataset added: ${res.data?.added} rows. Now click Retrain Models.`
+      );
+    }
+  }
+
+  // Upload BIG tamper dataset (.jsonl or .csv)
+  async function handleBulkTamperUpload() {
+    if (!tamperFile) {
+        setBulkStatus("Select a tamper dataset first.");
+        return;
+    }
+    setBulkStatus("Uploading tamper dataset...");
+    const res = await uploadTamperDataset(tamperFile);
+    if (!res.success) {
+      setBulkStatus("Error: " + res.error);
+    } else {
+      setBulkStatus(
+        `Tamper dataset added: ${res.data?.added} rows. Now click Retrain Models.`
+      );
+    }
   }
 
   return (
     <AppLayout>
-      <div className="space-y-6 p-6">
-        <div>
-          <h1 className="text-3xl font-bold text-foreground">Model Training</h1>
-          <p className="text-muted-foreground mt-2">Train custom AI models with your data for personalized threat detection</p>
+      <div className="p-6 space-y-8 text-foreground">
+        <h1 className="text-3xl font-bold">
+          Training &amp; Model Update
+        </h1>
+        <p className="text-muted-foreground max-w-3xl text-sm">
+          Add labeled examples of harassment / stalking messages or tampered
+          screenshots. Then click <b>Retrain Models</b> so CyberGuard learns
+          from your data. You can also bulk upload thousands of samples.
+        </p>
+
+        {/* Row 1: add harassment sample + add tamper sample */}
+        <div className="grid gap-6 lg:grid-cols-2">
+          {/* --- Harassment / Coercion / Stalking text samples --- */}
+          <Card className="border-border bg-card/50">
+            <CardHeader>
+              <CardTitle className="text-lg font-semibold">
+                Add Conversation Example (Harassment / Stalking)
+              </CardTitle>
+              <p className="text-xs text-muted-foreground">
+                Paste one or more abusive / coercive / threatening lines.
+                This improves harassment + coercion detection.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4 text-sm">
+              <label className="block text-xs font-medium text-muted-foreground">
+                Chat text
+              </label>
+              <textarea
+                className="w-full h-40 rounded-md bg-background border border-border p-3 text-xs text-foreground resize-none"
+                value={chatText}
+                onChange={(e) => setChatText(e.target.value)}
+              />
+
+              <div className="flex items-start gap-3">
+                <div className="flex items-center gap-2">
+                  {/* If you don't have Switch, replace with checkbox */}
+                  <Switch
+                    checked={isAbusive}
+                    onCheckedChange={(val: boolean) => setIsAbusive(val)}
+                    className="data-[state=checked]:bg-red-600"
+                  />
+                  <span className="text-sm font-medium text-foreground">
+                    Mark as abusive / threatening
+                  </span>
+                </div>
+              </div>
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                Turn OFF if this is actually a normal / safe message.
+                (We also need safe messages as negative training data.)
+              </p>
+
+              <button
+                onClick={handleSaveHarassment}
+                className="w-full bg-red-600 hover:bg-red-700 text-white text-sm font-medium py-2 rounded-md transition-colors"
+              >
+                Save Harassment Sample
+              </button>
+
+              {harassmentStatus && (
+                <div className="text-[11px] text-muted-foreground whitespace-pre-wrap">
+                  {harassmentStatus}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* --- Tamper forensics samples --- */}
+          <Card className="border-border bg-card/50">
+            <CardHeader>
+              <CardTitle className="text-lg font-semibold">
+                Add Image Forensics Example (Tampering)
+              </CardTitle>
+              <p className="text-xs text-muted-foreground">
+                Add metadata from a screenshot you already inspected
+                (ELA score, resolution, and whether it was edited).
+                This feeds the tamper/forgery detector.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4 text-sm">
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-muted-foreground">
+                  ELA score
+                </label>
+                <input
+                  className="w-full rounded-md bg-background border border-border p-2 text-xs text-foreground"
+                  placeholder="e.g. 62.5"
+                  value={elaScore}
+                  onChange={(e) => setElaScore(e.target.value)}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="block text-xs font-medium text-muted-foreground">
+                    Width (px)
+                  </label>
+                  <input
+                    className="w-full rounded-md bg-background border border-border p-2 text-xs text-foreground"
+                    value={widthPx}
+                    onChange={(e) => setWidthPx(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="block text-xs font-medium text-muted-foreground">
+                    Height (px)
+                  </label>
+                  <input
+                    className="w-full rounded-md bg-background border border-border p-2 text-xs text-foreground"
+                    value={heightPx}
+                    onChange={(e) => setHeightPx(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={isTampered}
+                    onCheckedChange={(val: boolean) => setIsTampered(val)}
+                    className="data-[state=checked]:bg-red-600"
+                  />
+                  <span className="text-sm font-medium text-foreground">
+                    Mark as tampered / edited
+                  </span>
+                </div>
+              </div>
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                Flip ON if this screenshot was altered/spliced.
+                OFF if it's clean.
+              </p>
+
+              <button
+                onClick={handleSaveTamper}
+                className="w-full bg-red-600 hover:bg-red-700 text-white text-sm font-medium py-2 rounded-md transition-colors"
+              >
+                Save Tamper Sample
+              </button>
+
+              {tamperStatus && (
+                <div className="text-[11px] text-muted-foreground whitespace-pre-wrap">
+                  {tamperStatus}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
 
-        {trainingSession ? (
-          <div className="space-y-6">
-            <Card className="border-border">
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle>{trainingSession.name}</CardTitle>
-                    <CardDescription>
-                      {trainingSession.status === "training" && "Training in progress..."}
-                      {trainingSession.status === "completed" && "Training completed successfully"}
-                      {trainingSession.status === "failed" && "Training failed"}
-                    </CardDescription>
-                  </div>
-                  <div className="flex gap-2">
-                    {trainingSession.status === "training" && (
-                      <>
-                        <Button size="sm" variant="outline" onClick={handlePauseTraining}>
-                          <Pause className="h-4 w-4" />
-                        </Button>
-                        <Button size="sm" variant="outline" onClick={handleStopTraining}>
-                          <Square className="h-4 w-4" />
-                        </Button>
-                      </>
-                    )}
-                    {trainingSession.status === "completed" && <CheckCircle2 className="h-6 w-6 text-green-500" />}
-                  </div>
-                </div>
-              </CardHeader>
-            </Card>
+        {/* Row 2: Retrain Models */}
+        <Card className="border-border bg-card/50">
+          <CardHeader>
+            <CardTitle className="text-lg font-semibold">
+              Retrain Models From Saved Samples
+            </CardTitle>
+            <p className="text-xs text-muted-foreground">
+              This will:
+            </p>
+            <ul className="text-xs text-muted-foreground list-disc ml-5 space-y-1">
+              <li>
+                Re-train the harassment / coercion / stalking classifier on{" "}
+                <code className="text-[10px] bg-black/30 px-1 py-0.5 rounded">
+                  data/harassment_samples.jsonl
+                </code>
+              </li>
+              <li>
+                Re-train the tamper/forgery classifier on{" "}
+                <code className="text-[10px] bg-black/30 px-1 py-0.5 rounded">
+                  data/tamper_samples.jsonl
+                </code>
+              </li>
+            </ul>
+            <p className="text-[10px] text-muted-foreground">
+              After that, the backend immediately starts using the new
+              models (no restart needed).
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4 text-sm">
+            <button
+              onClick={handleRetrain}
+              className="w-full bg-red-600 hover:bg-red-700 text-white text-sm font-medium py-2 rounded-md transition-colors"
+            >
+              Retrain Models
+            </button>
 
-            <TrainingProgress session={trainingSession} />
-            <ModelPerformance metrics={trainingSession.metrics} accuracy={trainingSession.accuracy} />
-          </div>
-        ) : (
-          <div className="grid gap-6 lg:grid-cols-3">
-            <div className="lg:col-span-1">
-              <DatasetManager onDatasetSelected={handleDatasetSelected} />
+            {retrainStatus && (
+              <div className="text-[11px] text-muted-foreground whitespace-pre-wrap">
+                {retrainStatus}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Row 3: Bulk Upload */}
+        <Card className="border-border bg-card/50">
+          <CardHeader>
+            <CardTitle className="text-lg font-semibold flex items-center gap-2">
+              <span>Bulk Upload Datasets (Advanced)</span>
+              <AlertCircle className="h-4 w-4 text-yellow-400" />
+            </CardTitle>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Upload thousands of labeled samples at once.
+              After upload, click <b>Retrain Models</b> above.
+            </p>
+          </CardHeader>
+
+          <CardContent className="grid gap-6 md:grid-cols-2 text-sm">
+            {/* Bulk harassment uploader */}
+            <div className="space-y-3">
+              <div className="text-sm font-medium text-foreground">
+                Harassment / Stalking Dataset
+              </div>
+              <p className="text-[11px] text-muted-foreground leading-snug">
+                Accepts CSV or JSONL. Each row/line must have:
+                <code className="text-[10px] bg-black/30 px-1 py-0.5 rounded ml-1">
+                  text
+                </code>
+                ,
+                <code className="text-[10px] bg-black/30 px-1 py-0.5 rounded ml-1">
+                  label
+                </code>
+                . Label 1 = abusive / stalking / coercive.
+                Label 0 = normal / safe.
+              </p>
+
+              <input
+                type="file"
+                className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-red-600 file:px-3 file:py-1.5 file:text-white hover:file:bg-red-700 file:text-xs file:font-medium"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  setHarassmentFile(f || null);
+                }}
+              />
+
+              <button
+                onClick={handleBulkHarassmentUpload}
+                className="w-full bg-red-600 hover:bg-red-700 text-white text-sm font-medium py-2 rounded-md transition-colors"
+              >
+                Upload Harassment Dataset
+              </button>
             </div>
 
-            <div className="lg:col-span-2">
-              <ModelConfig onStartTraining={handleStartTraining} isDisabled={!datasetSelected} isLoading={isTraining} />
+            {/* Bulk tamper uploader */}
+            <div className="space-y-3">
+              <div className="text-sm font-medium text-foreground">
+                Tamper / Forgery Dataset
+              </div>
+              <p className="text-[11px] text-muted-foreground leading-snug">
+                Accepts CSV or JSONL with columns/fields:
+                <code className="text-[10px] bg-black/30 px-1 py-0.5 rounded ml-1">
+                  ela
+                </code>
+                ,
+                <code className="text-[10px] bg-black/30 px-1 py-0.5 rounded ml-1">
+                  res_w
+                </code>
+                ,
+                <code className="text-[10px] bg-black/30 px-1 py-0.5 rounded ml-1">
+                  res_h
+                </code>
+                ,
+                <code className="text-[10px] bg-black/30 px-1 py-0.5 rounded ml-1">
+                  label
+                </code>
+                . Label 1 = edited / spliced. Label 0 = clean.
+              </p>
+
+              <input
+                type="file"
+                className="block w-full text-xs text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-red-600 file:px-3 file:py-1.5 file:text-white hover:file:bg-red-700 file:text-xs file:font-medium"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  setTamperFile(f || null);
+                }}
+              />
+
+              <button
+                onClick={handleBulkTamperUpload}
+                className="w-full bg-red-600 hover:bg-red-700 text-white text-sm font-medium py-2 rounded-md transition-colors"
+              >
+                Upload Tamper Dataset
+              </button>
             </div>
-          </div>
-        )}
+
+            {/* Status / instructions */}
+            <div className="md:col-span-2 text-[11px] text-muted-foreground whitespace-pre-wrap leading-relaxed">
+              {bulkStatus
+                ? bulkStatus
+                : "Tip: After uploads, press Retrain Models so the new data is learned immediately."}
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </AppLayout>
-  )
+  );
 }
